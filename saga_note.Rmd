@@ -1,0 +1,39 @@
+---
+title: "Watershed delineation using R"
+author: "E. Rottler"
+date: "March 2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Preface
+
+...
+
+## Data
+
+
+### River network
+
+https://land.copernicus.eu/imagery-in-situ/eu-hydro
+
+
+Watershed delineation in RSAGA
+
+https://gis.stackexchange.com/questions/162371/delineate-watershed-using-manual-points-in-rsaga
+
+
+
+
+### EU DEM
+
+[EU-DEM](https://land.copernicus.eu/imagery-in-situ) is a digital surface model (DSM) of EEA39 countries representing the first surface as illuminated by the sensors. It is a hybrid product based on SRTM and ASTER GDEM data fused by a weighted averaging approach. 
+
+
+https://github.com/ncss-tech/geo-pit/wiki/RSAGA-geoprocessing-instructions
+
+ftp://ftp.bgc-jena.mpg.de/pub/outgoing/mforkel/Rcourse/spatialR_2015.pdf
+
