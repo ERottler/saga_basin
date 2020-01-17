@@ -5,8 +5,9 @@
 
 ###
 
-pacman::p_load(RSAGA, rgdal, raster, sp, gdalUtils, maptools, leaflet, readr)
+pacman::p_load(RSAGA, rgdal, raster, sp, gdalUtils, maptools, leaflet, readr, htmlwidgets)
 
+base_dir <- "/home/rottler/ownCloud/RhineFlow/rhine_obs/saga_basin/"
 data_dir <- "/media/rottler/data2/basin_data/"
 
 #set path to SAGA
@@ -55,6 +56,11 @@ gdal_translate(src_dataset = path_eu_dem_25,
                dst_dataset = path_eu_dem_500,
                tr = c(500, 500))
 
+path_eu_dem_1000 <- paste0(data_dir, "eu_dem/processed/eu_dem_1000.tif")
+gdal_translate(src_dataset = path_eu_dem_25,
+               dst_dataset = path_eu_dem_1000,
+               tr = c(1000, 1000))
+
 #Convert to .sgrd (SAGA GIS format)
 path_eu_dem_100_saga <- paste0(data_dir, "eu_dem/processed/eu_dem_100.sgrd")
 rsaga.import.gdal(in.grid = path_eu_dem_100, out.grid = path_eu_dem_100_saga)
@@ -72,30 +78,6 @@ path_eu_dem_500_saga_fill <- paste0(data_dir, "eu_dem/processed/eu_dem_500_fill.
 rsaga.fill.sinks(in.dem = path_eu_dem_500_saga,
                  out.dem = path_eu_dem_500_saga_fill,
                  method = "wang.liu.2006")
-
-
-
-
-#prep_rivers----
-
-rhin_gdb <- paste0(data_dir, "eu_hydro/Rhine/Rhine.gdb")
-danu_gdb <- paste0(data_dir, "eu_hydro/Danube/Danube.gdb")
-
-# List all feature classes in a file geodatabase
-subset(ogrDrivers(), grepl("GDB", name))
-rhin_gdb_list <- ogrListLayers(rhin_gdb)
-danu_gdb_list <- ogrListLayers(danu_gdb)
-
-# Read the feature class
-rhin_river_net_l <- readOGR(dsn = rhin_gdb, layer = "River_Net_l")
-danu_river_net_l <- readOGR(dsn = danu_gdb, layer = "River_Net_l")
-
-rhin_river_net_l_sel <- rhin_river_net_l[rhin_river_net_l@data$STRAHLER > 4, ]
-danu_river_net_l_sel <- danu_river_net_l[danu_river_net_l@data$STRAHLER > 4, ]
-
-plot(danu_river_net_l_sel)
-plot(rhin_river_net_l_sel)
-
 
 #prep_gauges----
 
@@ -175,11 +157,17 @@ map <- leaflet(grdc_meta) %>%
 
 map
 
+saveWidget(map, file=paste0(base_dir, "calc_res/grdc_map.html"))
+
+write.table(grdc_meta, file = paste0(base_dir, "calc_res/grdc_meta.csv"), sep = ";", row.names = T, quote = T)
+grdc_meta <- read.table(file = paste0(base_dir, "calc_res/grdc_meta.csv"), sep = ";", header = T)
+
 #Select river gauge
-names_sel <- c("MELLINGEN", "BRUGG", "DOMAT/EMS", "BASEL, RHEINHALLE", "KOELN")
+# names_sel <- c("MELLINGEN", "BRUGG", "DOMAT/EMS", "BASEL, RHEINHALLE", "KOELN")
+names_sel <- c("BASEL, RHEINHALLE")
 
 grdc_sel <- grdc_meta[grdc_meta$name %in% names_sel, ]             
-             
+          
 crswgs84 <- CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
 gauges_84 <- SpatialPoints(data.frame(lon = grdc_sel$longitude, lat = grdc_sel$latitude), proj4string =  crswgs84)
 gauges    <- spTransform(gauges_84, dem_E30N20@crs)
@@ -190,13 +178,75 @@ points(gauges)
 
 #delineation----
 
+eu_dem_100_fill <- raster(paste0(data_dir, "eu_dem/processed/eu_dem_100_fill.sdat"))
+eu_dem_500_fill <- raster(paste0(data_dir, "eu_dem/processed/eu_dem_500_fill.sdat"))
+
+#Create target raster: gauges get values -1
+target_raster <- rasterize(gauges, eu_dem_100_fill, -1)
+
+#Write as .tif
+path_target_raster <- paste0(data_dir, "eu_dem/processed/target_raster.tif")
+writeRaster(target_raster, path_target_raster, overwrite = T)
+
+#Transform to .sgrd
+path_target_raster_saga <- paste0(data_dir, "eu_dem/processed/target_raster.sgrd")
+rsaga.import.gdal(in.grid = path_target_raster, out.grid = path_target_raster_saga) #transform to .sgrd
+
+#Calculate drainage area
+path_target_catch <- paste0(data_dir, "eu_dem/processed/basins/target_catch.sgrd")
+rsaga.geoprocessor(lib = "ta_hydrology", module = 4, env = env, 
+                   param = list(TARGET =  path_target_raster_saga,
+                                ELEVATION = path_eu_dem_500_saga_fill,
+                                AREA = path_target_catch,
+                                METHOD = 2,
+                                CONVERGE = 0.001))
+
+#Cells in this grid contain the probability of how likely a cell belongs to the 
+#Reclassify the grid, so that all pixels with a probability greater than zero considered catchment
+rsaga.geoprocessor(lib = "grid_tools", module = 15, env = env, 
+                   param = list(INPUT =  path_target_catch,
+                                RESULT = path_target_catch,
+                                METHOD = 0,
+                                OLD = 0,
+                                NEW = 1,
+                                SOPERATOR = 4,
+                                OTHEROPT = 1,
+                                OTHERS = -99999))
+
+#Convertreclassified cells to polygons
+path_target_catch_shp <- paste0(data_dir, "eu_dem/processed/basins/target_catch.shp")
+rsaga.geoprocessor("shapes_grid", 6, env = env, 
+                   param = list(GRID = path_target_catch ,
+                                POLYGONS = path_target_catch_shp,
+                                CLASS_ALL = 0,
+                                CLASS_ID = 1))
+
+
+
+
+target_catch <-  rgdal::readOGR(path_target_catch_shp, encoding = "UTF8")
+
+plot(eu_dem_500_fill)
+points(gauges)
+plot(target_catch, add = T)
 
 
 
 
 
-#snap point to line
-gauges <- snapPointsToLines(gauges, rhin_river_net_l_sel)
+
+
+
+target_catch <- raster(paste0(data_dir, "eu_dem/processed/basins/target_catch.sdat"))
+
+
+
+
+
+
+
+plot(target_raster)
+
 
 target_raster <- rasterize(gauges, eu_dem_500_fill, -1)
 
@@ -218,4 +268,29 @@ plot(target_catch)
 summary(target_catch@data@values)
 
 
+
+
+
+#opt_rivers----
+
+rhin_gdb <- paste0(data_dir, "eu_hydro/Rhine/Rhine.gdb")
+danu_gdb <- paste0(data_dir, "eu_hydro/Danube/Danube.gdb")
+
+# List all feature classes in a file geodatabase
+subset(ogrDrivers(), grepl("GDB", name))
+rhin_gdb_list <- ogrListLayers(rhin_gdb)
+danu_gdb_list <- ogrListLayers(danu_gdb)
+
+# Read the feature class
+rhin_river_net_l <- readOGR(dsn = rhin_gdb, layer = "River_Net_l")
+danu_river_net_l <- readOGR(dsn = danu_gdb, layer = "River_Net_l")
+
+rhin_river_net_l_sel <- rhin_river_net_l[rhin_river_net_l@data$STRAHLER > 4, ]
+danu_river_net_l_sel <- danu_river_net_l[danu_river_net_l@data$STRAHLER > 4, ]
+
+plot(danu_river_net_l_sel)
+plot(rhin_river_net_l_sel)
+
+#snap point to line
+gauges <- snapPointsToLines(gauges, rhin_river_net_l_sel)
 
