@@ -5,7 +5,7 @@
 
 ###
 
-pacman::p_load(RSAGA, rgdal, raster, sp, gdalUtils, maptools, leaflet, readr, htmlwidgets)
+pacman::p_load(RSAGA, rgdal, raster, sp, gdalUtils, maptools, leaflet, readr, htmlwidgets, rgeos)
 
 base_dir <- "/home/rottler/ownCloud/RhineFlow/rhine_obs/saga_basin/"
 data_dir <- "/media/rottler/data2/basin_data/"
@@ -61,6 +61,38 @@ gdal_translate(src_dataset = path_eu_dem_25,
                dst_dataset = path_eu_dem_1000,
                tr = c(1000, 1000))
 
+#Crop DEM 500
+eu_dem_100 <- raster(path_eu_dem_100)
+eu_dem_500 <- raster(path_eu_dem_500)
+my_ext <- extent(eu_dem_500)
+my_ext_buf <- my_ext + c(+800000, -300000, +400000, -700000) #xmin, xmax, ymin, ymax
+
+my_box <- as(my_ext_buf, 'SpatialPolygons')
+eu_dem_500_crop <- raster::crop(eu_dem_500, extent(my_box))
+eu_dem_500_mask <- mask(eu_dem_500_crop, my_box)
+plot(eu_dem_500_mask)
+
+#Crop DEM 100
+eu_dem_100 <- raster(path_eu_dem_100)
+my_ext <- extent(eu_dem_100)
+my_ext_buf <- my_ext + c(+800000, -300000, +400000, -700000) #xmin, xmax, ymin, ymax
+
+my_box <- as(my_ext_buf, 'SpatialPolygons')
+eu_dem_100_crop <- raster::crop(eu_dem_100, extent(my_box))
+eu_dem_100_mask <- mask(eu_dem_100_crop, my_box)
+plot(eu_dem_100_mask)
+
+#Convert NA to zero for fill DEM with 'sim_qm_of_esp'
+eu_dem_100_mask@data@values[is.na(eu_dem_100_mask@data@values)] <- 0
+eu_dem_500_mask@data@values[is.na(eu_dem_500_mask@data@values)] <- 0
+
+#Write dem
+path_eu_dem_100_mask <- paste0(data_dir, "eu_dem/processed/eu_dem_100_mask.tif")
+writeRaster(eu_dem_100_mask, path_eu_dem_100_mask, overwrite = T)
+
+path_eu_dem_500_mask <- paste0(data_dir, "eu_dem/processed/eu_dem_500_mask.tif")
+writeRaster(eu_dem_500_mask, path_eu_dem_500_mask, overwrite = T)
+
 #Convert to .sgrd (SAGA GIS format)
 path_eu_dem_100_saga <- paste0(data_dir, "eu_dem/processed/eu_dem_100.sgrd")
 rsaga.import.gdal(in.grid = path_eu_dem_100, out.grid = path_eu_dem_100_saga)
@@ -68,16 +100,34 @@ rsaga.import.gdal(in.grid = path_eu_dem_100, out.grid = path_eu_dem_100_saga)
 path_eu_dem_500_saga <- paste0(data_dir, "eu_dem/processed/eu_dem_500.sgrd")
 rsaga.import.gdal(in.grid = path_eu_dem_500, out.grid = path_eu_dem_500_saga)
 
+path_eu_dem_100_mask_saga <- paste0(data_dir, "eu_dem/processed/eu_dem_mask_100.sgrd")
+rsaga.import.gdal(in.grid = path_eu_dem_100_mask, out.grid = path_eu_dem_100_mask_saga)
+
+path_eu_dem_500_mask_saga <- paste0(data_dir, "eu_dem/processed/eu_dem_mask_500.sgrd")
+rsaga.import.gdal(in.grid = path_eu_dem_500_mask, out.grid = path_eu_dem_500_mask_saga)
+
 #Fill sinks
-path_eu_dem_100_saga_fill <- paste0(data_dir, "eu_dem/processed/eu_dem_100_fill.sgrd")
-rsaga.fill.sinks(in.dem = path_eu_dem_100_saga,
-                 out.dem = path_eu_dem_100_saga_fill,
+path_eu_dem_100_mask_saga_fill <- paste0(data_dir, "eu_dem/processed/eu_dem_100_mask_fill.sgrd")
+rsaga.fill.sinks(in.dem = path_eu_dem_100_mask_saga,
+                 out.dem = path_eu_dem_100_mask_saga_fill,
                  method = "wang.liu.2006")
 
 path_eu_dem_500_saga_fill <- paste0(data_dir, "eu_dem/processed/eu_dem_500_fill.sgrd")
 rsaga.fill.sinks(in.dem = path_eu_dem_500_saga,
                  out.dem = path_eu_dem_500_saga_fill,
                  method = "wang.liu.2006")
+
+path_eu_dem_500_mask_saga_fill_simqm <- paste0(data_dir, "eu_dem/processed/eu_dem_500_mask_fill_simqm.sgrd")
+rsaga.geoprocessor(lib = "sim_qm_of_esp", 1, env = env,
+                   param = list(DEM = path_eu_dem_500_mask_saga,
+                                FILLED = path_eu_dem_500_mask_saga_fill_simqm,
+                                DZFILL = 0.1))
+
+path_eu_dem_100_mask_saga_fill_simqm <- paste0(data_dir, "eu_dem/processed/eu_dem_100_mask_fill_simqm.sgrd")
+rsaga.geoprocessor(lib = "sim_qm_of_esp", 1, env = env,
+                   param = list(DEM = path_eu_dem_100_mask_saga,
+                                FILLED = path_eu_dem_100_mask_saga_fill_simqm,
+                                DZFILL = 0.1))
 
 #prep_gauges----
 
@@ -163,26 +213,32 @@ write.table(grdc_meta, file = paste0(base_dir, "calc_res/grdc_meta.csv"), sep = 
 grdc_meta <- read.table(file = paste0(base_dir, "calc_res/grdc_meta.csv"), sep = ";", header = T)
 
 #Select river gauge
-# names_sel <- c("MELLINGEN", "BRUGG", "DOMAT/EMS", "BASEL, RHEINHALLE", "KOELN")
-names_sel <- c("BASEL, RHEINHALLE")
+names_sel <- c("ROCKENAU-SKA")
 
 grdc_sel <- grdc_meta[grdc_meta$name %in% names_sel, ]             
           
 crswgs84 <- CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
 gauges_84 <- SpatialPoints(data.frame(lon = grdc_sel$longitude, lat = grdc_sel$latitude), proj4string =  crswgs84)
+gauges_84 <- SpatialPointsDataFrame(data.frame(lon = grdc_sel$longitude, lat = grdc_sel$latitude), 
+                       data = data.frame(data =rep(-1, length(grdc_sel$longitude))), proj4string =  crswgs84)
 gauges    <- spTransform(gauges_84, dem_E30N20@crs)
+# st_write(gauges, paste0(data_dir, "eu_dem/processed/basins/gauges.shp"), delete_dsn = T)
 
 eu_dem_500_fill <- raster(paste0(data_dir, "eu_dem/processed/eu_dem_500_fill.sdat"))
 plot(eu_dem_500_fill)
 points(gauges)
 
+#buffer around gauge (optional)
+gauges_buf <- buffer(gauges, width = 2000)
+
 #delineation----
 
-eu_dem_100_fill <- raster(paste0(data_dir, "eu_dem/processed/eu_dem_100_fill.sdat"))
-eu_dem_500_fill <- raster(paste0(data_dir, "eu_dem/processed/eu_dem_500_fill.sdat"))
+eu_dem_fill <- raster(paste0(data_dir, "eu_dem/processed/eu_dem_100_mask_fill_simqm.sdat"))
+# eu_dem_fill <- raster(paste0(data_dir, "eu_dem/processed/eu_dem_100_mask_fill.sdat"))
+# eu_dem_fill <- raster(paste0(data_dir, "eu_dem/processed/eu_dem_500_mask_fill_simqm.sdat"))
 
 #Create target raster: gauges get values -1
-target_raster <- rasterize(gauges, eu_dem_100_fill, -1)
+target_raster <- rasterize(gauges_buf, eu_dem_fill, -1)
 
 #Write as .tif
 path_target_raster <- paste0(data_dir, "eu_dem/processed/target_raster.tif")
@@ -193,13 +249,16 @@ path_target_raster_saga <- paste0(data_dir, "eu_dem/processed/target_raster.sgrd
 rsaga.import.gdal(in.grid = path_target_raster, out.grid = path_target_raster_saga) #transform to .sgrd
 
 #Calculate drainage area
+Sys.time()
+path_eu_dem_100_mask_saga_fill_simqm <- paste0(data_dir, "eu_dem/processed/eu_dem_100_mask_fill_simqm.sgrd")
 path_target_catch <- paste0(data_dir, "eu_dem/processed/basins/target_catch.sgrd")
 rsaga.geoprocessor(lib = "ta_hydrology", module = 4, env = env, 
                    param = list(TARGET =  path_target_raster_saga,
-                                ELEVATION = path_eu_dem_500_saga_fill,
+                                ELEVATION = path_eu_dem_100_mask_saga_fill_simqm,
                                 AREA = path_target_catch,
                                 METHOD = 2,
                                 CONVERGE = 0.001))
+Sys.time()
 
 #Cells in this grid contain the probability of how likely a cell belongs to the 
 #Reclassify the grid, so that all pixels with a probability greater than zero considered catchment
@@ -213,34 +272,71 @@ rsaga.geoprocessor(lib = "grid_tools", module = 15, env = env,
                                 OTHEROPT = 1,
                                 OTHERS = -99999))
 
-#Convertreclassified cells to polygons
-path_target_catch_shp <- paste0(data_dir, "eu_dem/processed/basins/target_catch.shp")
+#Convert reclassified cells to polygons
+name_basin <- "rockenau"
+path_target_catch_shp <- paste0(data_dir, "eu_dem/processed/basins/", name_basin, "_catch.shp")
 rsaga.geoprocessor("shapes_grid", 6, env = env, 
                    param = list(GRID = path_target_catch ,
                                 POLYGONS = path_target_catch_shp,
                                 CLASS_ALL = 0,
                                 CLASS_ID = 1))
 
-
-
-
 target_catch <-  rgdal::readOGR(path_target_catch_shp, encoding = "UTF8")
+plot(target_catch)
 
-plot(eu_dem_500_fill)
+#river_network----
+
+eu_dem_fill <- raster(paste0(data_dir, "eu_dem/processed/eu_dem_100_mask_fill_simqm.sdat"))
+
+basin_cut_raw <- rgdal::readOGR(dsn = "/media/rottler/data2/basin_data/eu_dem/processed/basins/lobith_catch.shp")
+
+my_box <- as(my_ext_buf, 'SpatialPolygons')
+dem_cro <- raster::crop(eu_dem_fill, basin_cut_raw)
+dem_sub <- mask(dem_cro, basin_cut_raw)
+
+plot(dem_sub)
+
+#Write as .tif
+path_dem_flow_accu <- paste0(data_dir, "eu_dem/processed/dem_flow_accu.tif")
+writeRaster(dem_sub, path_dem_flow_accu, overwrite = T)
+
+#Convert to .sgrd (SAGA GIS format)
+path_dem_flow_accu_saga <- paste0(data_dir, "eu_dem/processed/dem_flow_accu.sgrd")
+rsaga.import.gdal(in.grid = path_dem_flow_accu, out.grid = path_dem_flow_accu_saga)
+
+#Flow network
+path_river_network <- paste0(data_dir, "eu_dem/processed/basins/river_network.sgrd")
+rsaga.geoprocessor(lib = "ta_channels", module = 5, env = env, 
+                   param = list(SEGMENTS =  path_river_network,
+                                DEM = path_dem_flow_accu_saga,
+                                THRESHOLD = 9))
+
+river_network_raw <- rgdal::readOGR(dsn = "/media/rottler/data2/basin_data/eu_dem/processed/basins/river_network.shp")
+
+plot(river_network_raw)
+
+
+
+#old----
+
+
+
+#corp DEM sub-basin area
+my_ext <- extent(target_catch)
+my_ext_buf <- my_ext + c(-20000, +30000, -30000, +7000)
+
+my_box <- as(my_ext_buf, 'SpatialPolygons')
+dem_cro <- raster::crop(eu_dem_fill, extent(my_box))
+dem_sub <- mask(dem_cro, my_box)
+
+#BAFU basins
+basins <-  rgdal::readOGR(dsn = "/media/rottler/data2/basin_data/EZG_Schweiz_BAFU/ezg_kombiniert.shp")
+basin_base <- spTransform(basins[basins@data$Ort == "Basel, Rheinhalle",], CRS = crs(eu_dem_fill, asText = T))
+
+plot(dem_sub, axes = F, legend = F,  col = colorRampPalette(c("white", "black"))(200), box = F)
 points(gauges)
-plot(target_catch, add = T)
-
-
-
-
-
-
-
-
-target_catch <- raster(paste0(data_dir, "eu_dem/processed/basins/target_catch.sdat"))
-
-
-
+plot(target_catch, add = T, border = "red3")
+plot(basin_base, add = T, border = "blue3")
 
 
 
